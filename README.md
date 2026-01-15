@@ -111,9 +111,10 @@ python src/ask.py "What does Tesla say about Cybertruck production ramp?"
 The assistant will return a grounded answer with citations to the original SEC filings.
 
 Example output:
-
-"""Tesla states that it is ramping production of the Cybertruck by expanding
-manufacturing capacity at its Gigafactories and improving production efficiency [1][2]."""
+```text
+Tesla states that it is ramping production of the Cybertruck by expanding
+manufacturing capacity at its Gigafactories and improving production efficiency [1][2].
+```
 
 With cited sources:
 
