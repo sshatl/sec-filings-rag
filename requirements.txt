@@ -1,0 +1,7 @@
+requests
+pandas
+beautifulsoup4
+lxml
+tqdm
+python-dotenv
+chromadb
