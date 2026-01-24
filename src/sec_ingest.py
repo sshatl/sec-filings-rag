@@ -98,13 +98,18 @@ def main(max_chars: int = 2500, overlap: int = 200):
                     "id": f"{base_id}__chunk{i:04d}",
                     "text": ch,
                     "meta": {
-                        "ticker": base_id.split("__")[0],
+                        "ticker": item.get("ticker") or base_id.split("__")[0],
                         "form": item.get("form"),
                         "reportDate": item.get("reportDate"),
                         "accession": item.get("accession"),
+                        "acc_nodash": item.get("acc_nodash"),
+                        "cik_nozero": item.get("cik_nozero"),
+                        "primaryDocument": item.get("primaryDocument"),
+                        "edgar_url": item.get("edgar_url"),
                         "source_file": str(fpath),
                         "chunk_index": i,
                     },
+
                 }
             )
 

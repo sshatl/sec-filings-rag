@@ -24,6 +24,20 @@ Rules:
 - Do not invent numbers, dates, or claims not present in sources.
 """
 
+def format_citation(i: int, meta: dict) -> str:
+    ticker = meta.get("ticker", "UNK")
+    form = meta.get("form", "UNK")
+    rd = meta.get("reportDate", "UNK")
+    url = meta.get("edgar_url")
+    chunk = meta.get("chunk_index")
+    acc = meta.get("accession")
+
+    if url:
+        return f"[{i}] {ticker} {form} {rd} (chunk={chunk}, acc={acc})\n    EDGAR: {url}"
+    src = meta.get("source_file", "unknown")
+    return f"[{i}] {ticker} {form} {rd} (chunk={chunk}, acc={acc})\n    Source: {src}"
+
+
 def format_sources(docs, metas, max_chars_per_source=1200):
     blocks = []
     for i, (doc, meta) in enumerate(zip(docs, metas), 1):
@@ -73,7 +87,7 @@ Answer:"""
 
     print("\n=== SOURCES (top-k) ===\n")
     for i, meta in enumerate(metas, 1):
-        print(f"[{i}] {meta.get('source_file')} (form={meta.get('form')}, date={meta.get('reportDate')}, chunk={meta.get('chunk_index')})")
+        print(format_citation(i, meta))
 
 if __name__ == "__main__":
     import argparse

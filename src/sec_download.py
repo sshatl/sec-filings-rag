@@ -86,7 +86,23 @@ def main(ticker: str, limit: int = 20):
             download_filing_html(cik10, acc, doc, save_path)
             time.sleep(0.25)
 
-        out_meta.append({**f, "file": str(save_path)})
+        cik_nozero = str(int(cik10))
+        acc_nodash = acc.replace("-", "")
+        edgar_url = f"https://www.sec.gov/Archives/edgar/data/{cik_nozero}/{acc_nodash}/{doc}"
+
+        out_meta.append({
+            "ticker": ticker.upper(),
+            "cik10": cik10,
+            "cik_nozero": cik_nozero,
+            "form": form,
+            "accession": acc,
+            "acc_nodash": acc_nodash,
+            "primaryDocument": doc,
+            "reportDate": rd,
+            "edgar_url": edgar_url,
+            "file": str(save_path),
+        })
+
 
     Path("data").mkdir(exist_ok=True)
     Path("data/filings_meta.json").write_text(json.dumps(out_meta, indent=2), encoding="utf-8")
