@@ -24,6 +24,7 @@ Rules:
 - Do not invent numbers, dates, or claims not present in sources.
 """
 
+
 def format_citation(i: int, meta: dict) -> str:
     ticker = meta.get("ticker", "UNK")
     form = meta.get("form", "UNK")
@@ -41,16 +42,51 @@ def format_citation(i: int, meta: dict) -> str:
 def format_sources(docs, metas, max_chars_per_source=1200):
     blocks = []
     for i, (doc, meta) in enumerate(zip(docs, metas), 1):
-        snippet = doc[:max_chars_per_source].strip()
+        snippet = (doc or "")[:max_chars_per_source].strip()
         header = (
             f"[{i}] ticker={meta.get('ticker')} form={meta.get('form')} "
             f"reportDate={meta.get('reportDate')} chunk={meta.get('chunk_index')} "
-            f"source_file={meta.get('source_file')}"
+            f"edgar_url={meta.get('edgar_url')}"
         )
         blocks.append(header + "\n" + snippet)
     return "\n\n".join(blocks)
 
-def main(question: str, k: int = 5):
+
+def date_to_int(d: str | None) -> int | None:
+    if not d:
+        return None
+    return int(d.replace("-", ""))
+
+
+
+def build_where(ticker=None, form=None, min_date=None, max_date=None):
+    clauses = []
+    if ticker:
+        clauses.append({"ticker": ticker})
+    if form:
+        clauses.append({"form": form})
+    if min_date:
+        clauses.append({"reportDate_int": {"$gte": date_to_int(min_date)}})
+    if max_date:
+        clauses.append({"reportDate_int": {"$lte": date_to_int(max_date)}})
+
+    if not clauses:
+        return None
+    if len(clauses) == 1:
+        return clauses[0]
+    return {"$and": clauses}
+
+
+def main(
+    question: str,
+    k: int,
+    ticker: str | None,
+    form: str | None,
+    min_date: str | None,
+    max_date: str | None,
+):
+    where = build_where(ticker, form, min_date, max_date)
+
     chroma_client = chromadb.PersistentClient(path=CHROMA_DIR)
     col = chroma_client.get_collection(name=COLLECTION)
 
@@ -58,7 +94,23 @@ def main(question: str, k: int = 5):
 
     q_emb = oai.embeddings.create(model=EMBED_MODEL, input=question).data[0].embedding
 
-    res = col.query(query_embeddings=[q_emb], n_results=k)
+    query_kwargs = {
+        "query_embeddings": [q_emb],
+        "n_results": k,
+        "include": ["documents", "metadatas", "distances"],
+    }
+    if where is not None:
+        query_kwargs["where"] = where
+
+    res = col.query(**query_kwargs)
+
+    if not res.get("ids") or not res["ids"] or not res["ids"][0]:
+        print("\n=== ANSWER ===\n")
+        print("Not found in provided sources.")
+        print("\n=== SOURCES (top-k) ===\n")
+        print("(no results)")
+        return
+
     docs = res["documents"][0]
     metas = res["metadatas"][0]
 
@@ -94,5 +146,18 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("question")
     p.add_argument("--k", type=int, default=5)
+    p.add_argument("--ticker", type=str, default=None, help="e.g. TSLA")
+    p.add_argument("--form", type=str, default=None, help="e.g. 10-K or 10-Q")
+    p.add_argument("--min_date", type=str, default=None, help="YYYY-MM-DD")
+    p.add_argument("--max_date", type=str, default=None, help="YYYY-MM-DD")
+
     args = p.parse_args()
-    main(args.question, args.k)
+
+    main(
+        args.question,
+        args.k,
+        args.ticker,
+        args.form,
+        args.min_date,
+        args.max_date,
+    )

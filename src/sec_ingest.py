@@ -7,6 +7,13 @@ RAW_DIR = Path("data/raw")
 TEXT_DIR = Path("data/text")
 TEXT_DIR.mkdir(parents=True, exist_ok=True)
 
+def date_to_int(d: str | None) -> int | None:
+    if not d:
+        return None
+    try:
+        return int(str(d).replace("-", ""))
+    except ValueError:
+        return None
 
 def clean_lines(text: str) -> str:
     lines = [ln.strip() for ln in text.splitlines()]
@@ -101,6 +108,7 @@ def main(max_chars: int = 2500, overlap: int = 200):
                         "ticker": item.get("ticker") or base_id.split("__")[0],
                         "form": item.get("form"),
                         "reportDate": item.get("reportDate"),
+                        "reportDate_int": date_to_int(item.get("reportDate")),
                         "accession": item.get("accession"),
                         "acc_nodash": item.get("acc_nodash"),
                         "cik_nozero": item.get("cik_nozero"),
