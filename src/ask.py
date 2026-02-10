@@ -1,9 +1,14 @@
 import os
 import re
+from typing import List
 from dotenv import load_dotenv
 
 import chromadb
 from openai import OpenAI
+
+# ---------------------------------------------------------------------
+# Environment & configuration
+# ---------------------------------------------------------------------
 
 load_dotenv()
 
@@ -17,6 +22,7 @@ CHAT_MODEL = os.getenv("OPENAI_CHAT_MODEL", "gpt-4o-mini").strip()
 if not OPENAI_API_KEY:
     raise RuntimeError("Set OPENAI_API_KEY in .env")
 
+# System prompt enforces strict source-grounded answers
 SYSTEM = """You are a careful assistant answering questions using ONLY the provided sources.
 Rules:
 - Use ONLY facts found in the sources.
@@ -25,8 +31,12 @@ Rules:
 - Do not invent numbers, dates, or claims not present in sources.
 """
 
+# ---------------------------------------------------------------------
+# Output formatting helpers
+# ---------------------------------------------------------------------
 
 def format_citation(i: int, meta: dict) -> str:
+    """Pretty-print a single source citation."""
     ticker = meta.get("ticker", "UNK")
     form = meta.get("form", "UNK")
     rd = meta.get("reportDate", "UNK")
@@ -40,7 +50,8 @@ def format_citation(i: int, meta: dict) -> str:
     return f"[{i}] {ticker} {form} {rd} (chunk={chunk}, acc={acc})\n    Source: {src}"
 
 
-def format_sources(docs, metas, max_chars_per_source=1200):
+def format_sources(docs, metas, max_chars_per_source=1200) -> str:
+    """Prepare retrieved chunks for LLM context (with metadata headers)."""
     blocks = []
     for i, (doc, meta) in enumerate(zip(docs, metas), 1):
         snippet = (doc or "")[:max_chars_per_source].strip()
@@ -52,8 +63,12 @@ def format_sources(docs, metas, max_chars_per_source=1200):
         blocks.append(header + "\n" + snippet)
     return "\n\n".join(blocks)
 
+# ---------------------------------------------------------------------
+# Metadata utilities
+# ---------------------------------------------------------------------
 
 def date_to_int(d: str | None) -> int | None:
+    """Convert YYYY-MM-DD to integer for numeric filtering."""
     if not d:
         return None
     try:
@@ -69,6 +84,7 @@ def build_where(
     max_date: str | None,
     section: str | None,
 ) -> dict | None:
+    """Build Chroma metadata filter (AND-combined)."""
     clauses = []
     if ticker:
         clauses.append({"ticker": ticker.strip().upper()})
@@ -91,21 +107,21 @@ def build_where(
         return clauses[0]
     return {"$and": clauses}
 
+# ---------------------------------------------------------------------
+# Section routing heuristics
+# ---------------------------------------------------------------------
 
 def _norm(s: str) -> str:
+    """Normalize text for heuristic matching."""
     s = (s or "").lower()
     s = re.sub(r"\s+", " ", s).strip()
     return s
 
 
 def infer_section_contains(question: str) -> str | None:
-    """
-    Heuristic router: maps question -> section substring.
-    You can extend this safely.
-    """
+    """Heuristic router: infers relevant SEC section based on question intent."""
     q = _norm(question)
 
-    # Strong signals
     rules = [
         (r"\brisk factors?\b|\bitem 1a\b|\brisks?\b", "Risk Factors"),
         (r"\bmd&a\b|\bmanagement(?:'s)? discussion\b|\bliquidity\b|\bcash flows?\b|\bresults of operations\b|\boutlook\b", "MD&A"),
@@ -120,93 +136,161 @@ def infer_section_contains(question: str) -> str | None:
     for pat, sec in rules:
         if re.search(pat, q):
             return sec
-
     return None
 
+# ---------------------------------------------------------------------
+# MMR (Maximal Marginal Relevance) helpers
+# ---------------------------------------------------------------------
+
+_TOKEN_RE = re.compile(r"[a-z0-9]{2,}", re.IGNORECASE)
+
+
+def _token_set(text: str, max_tokens: int = 600) -> set:
+    """Lightweight tokenization for diversity scoring."""
+    if not text:
+        return set()
+    toks = _TOKEN_RE.findall(text.lower())
+    return set(toks[:max_tokens])
+
+
+def _jaccard(a: set, b: set) -> float:
+    """Jaccard similarity between two token sets."""
+    if not a and not b:
+        return 0.0
+    union = (a | b)
+    return (len(a & b) / len(union)) if union else 0.0
+
+
+def _dist_to_relevance(dist: float | None) -> float:
+    """Convert vector distance to relevance score (smaller dist => higher relevance)."""
+    if dist is None:
+        return 0.0
+    return 1.0 / (1.0 + float(dist))
+
+
+def mmr_select(
+    docs: List[str],
+    metas: List[dict],
+    dists: List[float | None],
+    k: int,
+    lamb: float = 0.7,
+):
+    """MMR selection to balance relevance and diversity among retrieved chunks."""
+    n = len(docs)
+    if n <= k:
+        return docs, metas, dists
+
+    relevance = [_dist_to_relevance(d) for d in dists]
+    toksets = [_token_set(doc) for doc in docs]
+
+    selected: List[int] = []
+    candidates = list(range(n))
+
+    # Start with the most relevant chunk
+    first = max(candidates, key=lambda i: relevance[i])
+    selected.append(first)
+    candidates.remove(first)
+
+    while len(selected) < k and candidates:
+        def score(i: int) -> float:
+            max_sim = max(_jaccard(toksets[i], toksets[j]) for j in selected)
+            return lamb * relevance[i] - (1 - lamb) * max_sim
+
+        best = max(candidates, key=score)
+        selected.append(best)
+        candidates.remove(best)
+
+    return (
+        [docs[i] for i in selected],
+        [metas[i] for i in selected],
+        [dists[i] for i in selected],
+    )
+
+# ---------------------------------------------------------------------
+# Main RAG pipeline
+# ---------------------------------------------------------------------
 
 def main(
     question: str,
-    k: int,
-    ticker: str | None,
-    form: str | None,
-    min_date: str | None,
-    max_date: str | None,
-    section: str | None,
-    section_contains: str | None,
+    k: int = 5,
+    ticker: str | None = None,
+    form: str | None = None,
+    min_date: str | None = None,
+    max_date: str | None = None,
+    section: str | None = None,
+    section_contains: str | None = None,
+    mmr: bool = True,
+    mmr_lambda: float = 0.7,
 ):
-    # If user didn't provide section filters, auto-route
-    auto_section_contains = None
+    """End-to-end RAG: query → retrieve → (optional) filter → (optional) MMR → answer."""
+    # Auto section routing if user did not specify filters
+    auto_section = None
     if not section and not section_contains:
-        auto_section_contains = infer_section_contains(question)
-        section_contains = auto_section_contains
+        auto_section = infer_section_contains(question)
+        section_contains = auto_section
 
     base_where = build_where(ticker, form, min_date, max_date, section)
 
-    # retrieval setup
-    chroma_client = chromadb.PersistentClient(path=CHROMA_DIR)
-    col = chroma_client.get_collection(name=COLLECTION)
+    # Setup clients
+    chroma = chromadb.PersistentClient(path=CHROMA_DIR)
+    col = chroma.get_collection(name=COLLECTION)
     oai = OpenAI(api_key=OPENAI_API_KEY)
 
+    # Embed the question
     q_emb = oai.embeddings.create(model=EMBED_MODEL, input=question).data[0].embedding
 
-    prefetch_k = max(k * 6, 30) if section_contains else k
+    # Over-fetch to allow post-filtering / MMR reranking
+    prefetch_k = max(k * 8, 40) if (section_contains or mmr) else k
 
-    query_kwargs = {
-        "query_embeddings": [q_emb],
-        "n_results": prefetch_k,
-        "include": ["documents", "metadatas", "distances"],
-    }
+    # Query Chroma with metadata filter (if any)
+    query_kwargs = dict(
+        query_embeddings=[q_emb],
+        n_results=prefetch_k,
+        include=["documents", "metadatas", "distances"],
+    )
     if base_where is not None:
         query_kwargs["where"] = base_where
 
     res = col.query(**query_kwargs)
 
-    if not res.get("ids") or not res["ids"] or not res["ids"][0]:
-        print("\n=== ANSWER ===\n")
-        print("Not found in provided sources.")
-        print("\n=== SOURCES (top-k) ===\n")
-        print("(no results)")
+    ids = res.get("ids", [[]])
+    if not ids or not ids[0]:
+        print("\n=== ANSWER ===\nNot found in provided sources.")
+        print("\n=== SOURCES ===\n(no results)")
         return
 
-    docs = res["documents"][0]
-    metas = res["metadatas"][0]
-    dists = res.get("distances", [[None] * len(docs)])[0]
+    docs = res.get("documents", [[]])[0]
+    metas = res.get("metadatas", [[]])[0]
+    dists = res.get("distances", [[]])[0]
 
-    # If section_contains is set, keep only matches (but we prefetch more)
+    # Post-filter by section substring (case-insensitive)
     if section_contains:
         needle = section_contains.strip().lower()
-        filtered = []
-        for doc, meta, dist in zip(docs, metas, dists):
-            sec = str(meta.get("section", "")).lower()
-            if needle in sec:
-                filtered.append((doc, meta, dist))
-
+        filtered = [
+            (d, m, s)
+            for d, m, s in zip(docs, metas, dists)
+            if needle in str(m.get("section", "")).lower()
+        ]
         if not filtered:
-            print("\n=== ANSWER ===\n")
-            print("Not found in provided sources.")
-            print("\n=== SOURCES (top-k) ===\n")
-            if auto_section_contains:
-                print(f"(no results after auto section routing: '{auto_section_contains}')")
-            else:
-                print("(no results after section filter)")
+            print("\n=== ANSWER ===\nNot found in provided sources.")
+            print("\n=== SOURCES ===\n(no results after section filter)")
             return
 
-        filtered = filtered[:k]
         docs = [x[0] for x in filtered]
         metas = [x[1] for x in filtered]
+        dists = [x[2] for x in filtered]
+
+    # Final top-k selection (MMR or simple top-k)
+    if mmr:
+        docs, metas, dists = mmr_select(docs, metas, dists, k, mmr_lambda)
     else:
         docs = docs[:k]
         metas = metas[:k]
+        dists = dists[:k]
 
+    # Build LLM prompt
     sources_text = format_sources(docs, metas)
-
-    # Optional: tell the model which section was targeted (helps grounding)
-    section_hint = ""
-    if section_contains:
-        section_hint = f"\nTargeted section: {section_contains}\n"
-
-    user = f"""Question: {question}
-{section_hint}
+    user_prompt = f"""Question: {question}
 Sources:
 {sources_text}
 
@@ -216,27 +300,26 @@ Answer:"""
         model=CHAT_MODEL,
         messages=[
             {"role": "system", "content": SYSTEM},
-            {"role": "user", "content": user},
+            {"role": "user", "content": user_prompt},
         ],
         temperature=0,
     )
 
-    answer = resp.choices[0].message.content
-
+    # Print answer + citations
     print("\n=== ANSWER ===\n")
-    if auto_section_contains:
-        print(f"(auto section routing: {auto_section_contains})\n")
-    print(answer)
+    if auto_section:
+        print(f"(auto section routing: {auto_section})\n")
+    print(resp.choices[0].message.content)
 
-    print("\n=== SOURCES (top-k) ===\n")
-    for i, meta in enumerate(metas, 1):
-        print(format_citation(i, meta))
+    print("\n=== SOURCES ===\n")
+    for i, m in enumerate(metas, 1):
+        print(format_citation(i, m))
 
 
 if __name__ == "__main__":
     import argparse
 
-    p = argparse.ArgumentParser()
+    p = argparse.ArgumentParser(description="Ask questions over SEC filings via RAG (Chroma + OpenAI).")
     p.add_argument("question")
     p.add_argument("--k", type=int, default=5)
     p.add_argument("--ticker", type=str, default=None, help="e.g. TSLA")
@@ -246,15 +329,24 @@ if __name__ == "__main__":
     p.add_argument("--section", type=str, default=None, help="exact section name (metadata)")
     p.add_argument("--section_contains", type=str, default=None, help="substring match, e.g. 'Risk Factors'")
 
+    # MMR controls
+    p.add_argument("--mmr", dest="mmr", action="store_true", help="Enable MMR reranking (default).")
+    p.add_argument("--no_mmr", dest="mmr", action="store_false", help="Disable MMR reranking.")
+    p.set_defaults(mmr=True)
+
+    p.add_argument("--mmr_lambda", type=float, default=0.7, help="MMR lambda (0..1). Higher => more relevance.")
+
     args = p.parse_args()
 
     main(
-        args.question,
-        args.k,
-        args.ticker,
-        args.form,
-        args.min_date,
-        args.max_date,
-        args.section,
-        args.section_contains,
+        question=args.question,
+        k=args.k,
+        ticker=args.ticker,
+        form=args.form,
+        min_date=args.min_date,
+        max_date=args.max_date,
+        section=args.section,
+        section_contains=args.section_contains,
+        mmr=args.mmr,
+        mmr_lambda=args.mmr_lambda,
     )
