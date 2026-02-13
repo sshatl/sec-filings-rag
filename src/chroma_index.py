@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+
 import chromadb
 
 CHROMA_DIR = "chroma"

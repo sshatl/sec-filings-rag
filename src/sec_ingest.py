@@ -1,6 +1,7 @@
 import json
 import re
 from pathlib import Path
+
 from bs4 import BeautifulSoup
 
 RAW_DIR = Path("data/raw")

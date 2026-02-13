@@ -1,9 +1,10 @@
-import os
 import json
-import time
+import os
 import re
-import requests
+import time
 from pathlib import Path
+
+import requests
 from dotenv import load_dotenv
 
 load_dotenv()

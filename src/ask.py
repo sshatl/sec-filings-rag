@@ -1,12 +1,12 @@
 import os
-from dotenv import load_dotenv
 
 import chromadb
+from dotenv import load_dotenv
 from openai import OpenAI
 
-from rag.mmr import mmr_select
-from rag.formatting import format_citation, format_sources
 from rag.filters import build_where, infer_section_contains
+from rag.formatting import format_citation, format_sources
+from rag.mmr import mmr_select
 
 # ---------------------------------------------------------------------
 # Environment & configuration

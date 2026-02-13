@@ -1,4 +1,5 @@
 import os
+
 import chromadb
 from dotenv import load_dotenv
 from openai import OpenAI

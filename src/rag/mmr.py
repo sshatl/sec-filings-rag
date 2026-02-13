@@ -4,7 +4,6 @@
 
 
 import re
-from typing import List
 
 _TOKEN_RE = re.compile(r"[a-z0-9]{2,}", re.IGNORECASE)
 
@@ -33,9 +32,9 @@ def _dist_to_relevance(dist: float | None) -> float:
 
 
 def mmr_select(
-    docs: List[str],
-    metas: List[dict],
-    dists: List[float | None],
+    docs: list[str],
+    metas: list[dict],
+    dists: list[float | None],
     k: int,
     lamb: float = 0.7,
 ):
@@ -47,7 +46,7 @@ def mmr_select(
     relevance = [_dist_to_relevance(d) for d in dists]
     toksets = [_token_set(doc) for doc in docs]
 
-    selected: List[int] = []
+    selected: list[int] = []
     candidates = list(range(n))
 
     # Start with the most relevant chunk

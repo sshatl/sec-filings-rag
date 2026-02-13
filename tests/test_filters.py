@@ -1,4 +1,4 @@
-from rag.filters import date_to_int, build_where, infer_section_contains
+from rag.filters import build_where, date_to_int, infer_section_contains
 
 
 def test_date_to_int_ok():

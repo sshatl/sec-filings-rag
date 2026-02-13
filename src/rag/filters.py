@@ -3,7 +3,7 @@
 # ---------------------------------------------------------------------
 
 import re
-from typing import List
+
 
 def date_to_int(d: str | None) -> int | None:
     """Convert YYYY-MM-DD to integer for numeric filtering."""
