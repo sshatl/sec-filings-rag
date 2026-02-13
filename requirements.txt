@@ -6,3 +6,4 @@ tqdm
 python-dotenv
 chromadb
 openai
+pytest
