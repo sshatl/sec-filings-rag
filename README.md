@@ -1,6 +1,6 @@
 # SEC Filings RAG Assistant
 
-This project implements a **private Retrieval-Augmented Generation (RAG) system**
+This project implements a **Retrieval-Augmented Generation (RAG) system**
 over U.S. SEC filings (10-K, 10-Q) to answer questions using **source-grounded LLM responses**.
 
 The system ingests real-world financial disclosures, indexes them in a vector database,
@@ -44,23 +44,23 @@ SEC Filings (HTML)
 ---
 
 ### 📁 Project Structure
-
+---
 ```text
-sec-rag/
-  data/
-    raw/            # downloaded filings (excluded from git)
-  chroma/           # persistent vector DB (excluded from git)
-  src/
-    sec_download.py
-    sec_ingest.py
-    chroma_index_openai.py
-    search_openai.py
-    ask.py
-  requirements.txt
-  .env.example
-  .gitignore
-
+src/
+  rag/
+    filters.py
+    formatting.py
+    mmr.py
+  sec_download.py
+  sec_ingest.py
+  chroma_index_openai.py
+  search_openai.py
+  ask.py
+tests/
+  test_filters.py
+  test_mmr.py
 ```
+---
 ## 🚀 How to Run
 
 ### 1. Setup environment
@@ -108,20 +108,33 @@ Query the system using Retrieval-Augmented Generation:
 ```bash
 python src/ask.py "What does Tesla say about Cybertruck production ramp?"
 ```
-The assistant will return a grounded answer with citations to the original SEC filings.
 
-Example output:
-```text
-Tesla states that it is ramping production of the Cybertruck by expanding
-manufacturing capacity at its Gigafactories and improving production efficiency [1][2].
+Filter by ticker and form
+```bash
+python src/ask.py \
+  "What are the main risk factors Tesla lists?" \
+  --ticker TSLA \
+  --form 10-K \
+  --k 5
 ```
-
-With cited sources:
-
-TSLA 10-Q (2024-09-30)
-
-TSLA 10-K (2024-12-31)
-
+Date range filtering
+```bash
+python src/ask.py \
+  "How does Tesla describe liquidity risks?" \
+  --ticker TSLA \
+  --form 10-K \
+  --min_date 2023-01-01 \
+  --max_date 2024-12-31
+  ```
+  MMR reranking (diversified results)
+  ```bash
+  python src/ask.py \
+  "What are Tesla's key market risks?" \
+  --ticker TSLA \
+  --form 10-K \
+  --mmr \
+  --k 5
+```
 ---
 
 ## 🛡️ Hallucination Control
